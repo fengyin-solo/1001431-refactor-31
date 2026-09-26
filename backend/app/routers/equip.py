@@ -30,6 +30,12 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/stats")
+def maintenance_stats() -> dict[str, Any]:
+    """统计卡数据：与列表、详情页共用同一个保养到期口径，刷新后三处台数一致。"""
+    return {"items": service.maintenance_stats()}
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条养护机械明细；不存在时给出可读的错误说明。"""
@@ -41,10 +47,12 @@ def get_entry(entry_id: int) -> dict:
 
 @router.post("", response_model=ActionResult)
 def create_entry(payload: EntryPayload) -> ActionResult:
-    """登记一条养护机械，缺字段时说明原因而不是静默丢弃。"""
-    entry, missing = service.create_entry(payload.values)
+    """登记一条养护机械；缺字段时说明原因，同一机械编号重复提交时只保留原有记录。"""
+    entry, missing, created = service.create_entry(payload.values)
     if missing:
         return ActionResult(ok=False, message=f"缺少必填字段：{'、'.join(missing)}")
+    if not created:
+        return ActionResult(ok=True, message="该机械编号已登记，重复提交只保留一条记录", entry=entry)
     return ActionResult(ok=True, message="养护机械已登记", entry=entry)
 
 
