@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.equip import EquipService
+from app.services.equip import VERDICT_STATES, EquipService
 
 router = APIRouter(prefix="/api/equip", tags=["养护机械"])
 
@@ -16,17 +16,33 @@ LIST_FIELDS = ["机械编号", "机械名称", "机械型号", "停放场地", "
 STATUSES = ["待保养", "可用", "保养中", "已报废"]
 
 
+@router.get("/stats")
+def stats_entries() -> dict[str, Any]:
+    """统计卡：与列表、详情共用同一套保养到期口径，刷新后台数一致。"""
+    return {"items": service.stats()}
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出养护机械清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "equip", "total": total, "items": items}
+
+
 @router.get("", response_model=PageResult[dict])
 def list_entries(
     keyword: str | None = Query(default=None, description="按机械编号检索"),
     status: str | None = Query(default=None, description="待保养、可用、保养中、已报废"),
+    verdict: str | None = Query(default=None, description="按保养结论筛选：保养到期、保养未到期、日期待补、已报废"),
     page: int = 1,
     size: int = 20,
 ) -> PageResult[dict]:
-    """按机械编号与状态过滤养护机械列表；没有数据时返回空页，不报错。"""
+    """按机械编号、状态与保养结论过滤养护机械列表；没有数据时返回空页，不报错。"""
     if size > 200:
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
-    items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
+    if verdict and verdict not in VERDICT_STATES:
+        raise HTTPException(status_code=400, detail=f"保养结论只能是：{'、'.join(VERDICT_STATES)}")
+    items, total = service.list_entries(keyword=keyword, status=status, verdict=verdict, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
 
 
@@ -41,10 +57,12 @@ def get_entry(entry_id: int) -> dict:
 
 @router.post("", response_model=ActionResult)
 def create_entry(payload: EntryPayload) -> ActionResult:
-    """登记一条养护机械，缺字段时说明原因而不是静默丢弃。"""
-    entry, missing = service.create_entry(payload.values)
+    """登记一条养护机械，缺字段时说明原因而不是静默丢弃；重复提交只保留一条。"""
+    entry, missing, created = service.create_entry(payload.values)
     if missing:
         return ActionResult(ok=False, message=f"缺少必填字段：{'、'.join(missing)}")
+    if not created:
+        return ActionResult(ok=True, message="相同机械编号已登记，重复提交只保留一条", entry=entry)
     return ActionResult(ok=True, message="养护机械已登记", entry=entry)
 
 
@@ -56,10 +74,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出养护机械清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "equip", "total": total, "items": items}
